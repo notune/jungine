@@ -18,9 +18,6 @@ jobs:
           - os: windows-latest
             artifact: jungle-windows
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: engine
 
     steps:
       - uses: actions/checkout@v4
@@ -34,17 +31,19 @@ jobs:
 
       - name: Build (Linux/macOS)
         if: runner.os != 'Windows'
+        working-directory: engine
         run: make CXXFLAGS="-std=c++17 -O3 -flto -DNDEBUG -Wall -Wextra -Wno-unused-parameter"
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
-          cd engine
+          cd "$GITHUB_WORKSPACE/engine"
           make CXXFLAGS="-std=c++17 -O3 -flto -DNDEBUG -Wall -Wextra -Wno-unused-parameter" TARGET=jungle.exe
 
       - name: Quick test (Linux/macOS)
         if: runner.os != 'Windows'
+        working-directory: engine
         run: |
           echo -e "jcei\nisready\nperft 3\nquit" | ./jungle
 
@@ -52,7 +51,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
-          cd engine
+          cd "$GITHUB_WORKSPACE/engine"
           echo -e "jcei\nisready\nperft 3\nquit" | ./jungle.exe
 
       - name: Upload artifact
