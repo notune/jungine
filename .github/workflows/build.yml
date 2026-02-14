@@ -1,0 +1,63 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: jungle-linux
+          - os: macos-latest
+            artifact: jungle-macos
+          - os: windows-latest
+            artifact: jungle-windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: engine
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc make
+
+      - name: Build (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: make CXXFLAGS="-std=c++17 -O3 -flto -DNDEBUG -Wall -Wextra -Wno-unused-parameter"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          cd engine
+          make CXXFLAGS="-std=c++17 -O3 -flto -DNDEBUG -Wall -Wextra -Wno-unused-parameter" TARGET=jungle.exe
+
+      - name: Quick test (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          echo -e "jcei\nisready\nperft 3\nquit" | ./jungle
+
+      - name: Quick test (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          cd engine
+          echo -e "jcei\nisready\nperft 3\nquit" | ./jungle.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: engine/jungle*
+          if-no-files-found: error
