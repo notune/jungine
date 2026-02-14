@@ -79,7 +79,7 @@ static void cmdGo(std::istringstream& iss) {
 
 int main() {
     initTables();
-    engine.init(128); // 128 MB TT
+    engine.init(64); // 64 MB TT
     engine.board.init();
 
     std::string line;
@@ -160,7 +160,7 @@ int main() {
         }
         else if (cmd == "newgame" || cmd == "ucinewgame") {
             engine.destroy();
-            engine.init(128);
+            engine.init(64);
             engine.board.init();
             engine.clearHistory();
         }

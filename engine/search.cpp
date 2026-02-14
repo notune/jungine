@@ -4,10 +4,23 @@
 #include <cmath>
 #include <algorithm>
 
+// LMR reduction table (precomputed)
+static int lmrTable[64][64]; // [depth][moveIndex]
+static bool lmrInit = false;
+
+static void initLMR() {
+    if (lmrInit) return;
+    for (int d = 0; d < 64; d++)
+        for (int m = 0; m < 64; m++)
+            lmrTable[d][m] = (d > 0 && m > 0) ? (int)(0.75 + log(d) * log(m) / 2.5) : 0;
+    lmrInit = true;
+}
+
 // ========================================================================
 //  Init / Destroy
 // ========================================================================
 void Search::init(size_t ttSizeMB) {
+    initLMR();
     size_t bytes = ttSizeMB * 1024ULL * 1024ULL;
     ttEntries = bytes / sizeof(TTEntry);
     // Round down to power of 2
@@ -60,7 +73,7 @@ TTEntry* Search::probeTT(uint64_t key) const {
 
 void Search::storeTT(uint64_t key, int score, Move bestMove, int depth, uint8_t flag) {
     TTEntry* e = &tt[key & ttMask];
-    // Replace if: empty, same position, or shallower
+    // Replace if: empty, same position, or shallower depth
     if (e->flag == TT_NONE || e->key == key || e->depth <= depth) {
         e->key      = key;
         e->score    = (int16_t)score;
@@ -93,17 +106,17 @@ int Search::scoreMove(Move m, int ply, Move hashMove) const {
     int target = board.squares[to];
     int piece  = board.squares[from];
 
-    // Captures: MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+    // Den entry is a winning move - highest priority after hash
+    int color = piece > 0 ? LIGHT : DARK;
+    int oppDen = (color == LIGHT) ? DEN_DARK_SQ : DEN_LIGHT_SQ;
+    if (to == oppDen) return 900000;
+
+    // Captures: MVV-LVA
     if (target != 0) {
         int victimVal  = MATERIAL_VAL[abs(target)];
         int attackerVal = MATERIAL_VAL[abs(piece)];
         return 500000 + victimVal * 10 - attackerVal;
     }
-
-    // Den entry is like a winning capture
-    int color = piece > 0 ? LIGHT : DARK;
-    int oppDen = (color == LIGHT) ? DEN_DARK_SQ : DEN_LIGHT_SQ;
-    if (to == oppDen) return 900000;
 
     // Killers
     if (ply < MAX_PLY) {
@@ -117,7 +130,6 @@ int Search::scoreMove(Move m, int ply, Move hashMove) const {
 }
 
 void Search::orderMoves(Move* moves, int count, int ply, Move hashMove) const {
-    // Just score; we'll use pickBest during iteration
     (void)moves; (void)count; (void)ply; (void)hashMove;
 }
 
@@ -141,6 +153,7 @@ void Search::pickBest(Move* moves, int* scores, int count, int cur) const {
 // ========================================================================
 int Search::quiescence(int alpha, int beta, int ply) {
     nodes++;
+    if (ply > selDepth) selDepth = ply;
 
     // Check game over
     int gameRes = board.checkGameOver();
@@ -166,7 +179,7 @@ int Search::quiescence(int alpha, int beta, int ply) {
     for (int i = 0; i < count; i++) {
         pickBest(moves, scores, count, i);
 
-        // Delta pruning: skip if even the best capture can't improve alpha
+        // Delta pruning
         int target = board.squares[moveTo(moves[i])];
         if (target != 0) {
             int gain = MATERIAL_VAL[abs(target)];
@@ -204,6 +217,9 @@ int Search::alphaBeta(int depth, int alpha, int beta, int ply, bool isPV, bool a
     // 200 half-move draw
     if (board.halfmove >= 200) return SCORE_DRAW;
 
+    // Max ply
+    if (ply >= MAX_PLY - 1) return board.evaluate();
+
     // Leaf: quiescence
     if (depth <= 0) return quiescence(alpha, beta, ply);
 
@@ -228,16 +244,30 @@ int Search::alphaBeta(int depth, int alpha, int beta, int ply, bool isPV, bool a
     }
 
     int staticEval = board.evaluate();
+    bool inDanger = false;
+
+    // Are we in danger? (opponent has piece 1-2 steps from our den)
+    {
+        int opp = 1 - board.sideToMove;
+        int ourDenSq = (board.sideToMove == LIGHT) ? DEN_LIGHT_SQ : DEN_DARK_SQ;
+        for (int rk = 1; rk <= 8; rk++) {
+            int sq = board.pieceSq[opp][rk];
+            if (sq < 0) continue;
+            int dr = abs(sqRow(sq) - sqRow(ourDenSq));
+            int dc = abs(sqCol(sq) - sqCol(ourDenSq));
+            if (dr + dc <= 2) { inDanger = true; break; }
+        }
+    }
 
     // ---- Razoring ----
-    if (!isPV && depth <= 3 && staticEval + 300 * depth <= alpha) {
-        if (depth == 1) return quiescence(alpha, beta, ply);
+    if (!isPV && !inDanger && depth <= 2 && staticEval + 300 * depth <= alpha
+        && abs(alpha) < SCORE_MATE - MAX_PLY) {
         int qScore = quiescence(alpha, beta, ply);
         if (qScore <= alpha) return qScore;
     }
 
-    // ---- Reverse futility pruning (static null move) ----
-    if (!isPV && depth <= 3 && !allowNull
+    // ---- Reverse futility pruning ----
+    if (!isPV && !inDanger && depth <= 3
         && staticEval - 120 * depth >= beta
         && abs(beta) < SCORE_MATE - MAX_PLY) {
         return staticEval - 120 * depth;
@@ -245,11 +275,13 @@ int Search::alphaBeta(int depth, int alpha, int beta, int ply, bool isPV, bool a
 
     // ---- Null move pruning ----
     if (!isPV && allowNull && depth >= 3
+        && !inDanger
         && staticEval >= beta
         && board.pieceCount[board.sideToMove] >= 2
         && abs(beta) < SCORE_MATE - MAX_PLY) {
 
         int R = 3 + depth / 6;
+        if (R > depth - 1) R = depth - 1;
         board.makeNullMove();
         int nullScore = -alphaBeta(depth - 1 - R, -beta, -beta + 1, ply + 1, false, false);
         board.unmakeNullMove();
@@ -274,7 +306,7 @@ int Search::alphaBeta(int depth, int alpha, int beta, int ply, bool isPV, bool a
     int moveCount = 0;
     board.generateMoves(moves, moveCount);
 
-    if (moveCount == 0) return -(SCORE_MATE - ply); // no legal moves = loss
+    if (moveCount == 0) return -(SCORE_MATE - ply);
 
     // Score moves
     int scores[MAX_MOVES];
@@ -298,46 +330,62 @@ int Search::alphaBeta(int depth, int alpha, int beta, int ply, bool isPV, bool a
         int color = piece > 0 ? LIGHT : DARK;
         int oppDen = (color == LIGHT) ? DEN_DARK_SQ : DEN_LIGHT_SQ;
         if (to == oppDen) {
-            // This is a winning move
             pv[ply][ply] = m;
             pvLen[ply] = ply + 1;
+            storeTT(board.hash, scoreToTT(SCORE_MATE - ply, ply), m, depth, TT_EXACT);
             return SCORE_MATE - ply;
+        }
+
+        // ---- Extensions ----
+        int extension = 0;
+        // Extend when opponent piece is very close to our den
+        if (inDanger) extension = 1;
+        // Extend captures of high-value pieces
+        if (isCapture && abs(board.squares[to]) >= TIGER) extension = std::max(extension, 1);
+
+        int newDepth = depth - 1 + extension;
+
+        // ---- Futility pruning ----
+        if (!isPV && !inDanger && depth <= 2 && !isCapture
+            && movesSearched > 0
+            && abs(alpha) < SCORE_MATE - MAX_PLY) {
+            int futilityMargin = depth * 150;
+            if (staticEval + futilityMargin <= alpha) {
+                movesSearched++;
+                continue;
+            }
         }
 
         board.makeMove(m);
 
         int score;
-        int newDepth = depth - 1;
 
-        // ---- Extensions ----
-        // Den threat: if after our move, opponent has a piece 1 step from our den
-        // (This is checked from opponent's perspective after our move)
-        // Actually, extend if WE are threatening the opponent den nearby
-        // or if opponent is threatening our den
-
-        // ---- LMR ----
         if (movesSearched == 0) {
-            // First move: full window
+            // First move: full window search
             score = -alphaBeta(newDepth, -beta, -alpha, ply + 1, isPV, true);
         } else {
+            // ---- LMR ----
             int reduction = 0;
-            if (depth >= 3 && movesSearched >= 3 && !isCapture) {
-                // LMR table-like reduction
-                reduction = 1;
-                if (movesSearched >= 6) reduction = 2;
-                if (movesSearched >= 12 && depth >= 6) reduction = 3;
+            if (depth >= 3 && movesSearched >= 2 && !isCapture && !inDanger) {
+                reduction = lmrTable[std::min(depth, 63)][std::min(movesSearched, 63)];
+                // Reduce less in PV nodes
+                if (isPV) reduction = std::max(0, reduction - 1);
+                // Don't reduce into negative
                 reduction = std::min(reduction, newDepth - 1);
                 if (reduction < 0) reduction = 0;
-                // Reduce less in PV nodes
-                if (isPV && reduction > 1) reduction--;
             }
 
-            // Zero-window search with reduction
+            // Step 1: Zero-window search with reduction
             score = -alphaBeta(newDepth - reduction, -alpha - 1, -alpha, ply + 1, false, true);
 
-            // Re-search if needed
-            if (score > alpha && (reduction > 0 || !isPV)) {
-                score = -alphaBeta(newDepth, -beta, -alpha, ply + 1, isPV, true);
+            // Step 2: If reduced and failed high, re-search without reduction (still zero window)
+            if (score > alpha && reduction > 0) {
+                score = -alphaBeta(newDepth, -alpha - 1, -alpha, ply + 1, false, true);
+            }
+
+            // Step 3: If PV node and failed high, full window re-search
+            if (isPV && score > alpha && score < beta) {
+                score = -alphaBeta(newDepth, -beta, -alpha, ply + 1, true, true);
             }
         }
 
@@ -364,21 +412,21 @@ int Search::alphaBeta(int depth, int alpha, int beta, int ply, bool isPV, bool a
                 if (score >= beta) {
                     ttFlag = TT_BETA;
 
-                    // Update killers for quiet moves
+                    // Update killers and history for quiet moves
                     if (!isCapture && ply < MAX_PLY) {
                         if (m != killers[ply][0]) {
                             killers[ply][1] = killers[ply][0];
                             killers[ply][0] = m;
                         }
                         // History bonus
-                        history[board.sideToMove][from][to] += depth * depth;
-                        // Cap history values
+                        int bonus = depth * depth;
+                        history[board.sideToMove][from][to] += bonus;
+                        // Age history periodically
                         if (history[board.sideToMove][from][to] > 100000) {
-                            for (int a = 0; a < NUM_SQ; a++)
-                                for (int b = 0; b < NUM_SQ; b++) {
-                                    history[0][a][b] /= 2;
-                                    history[1][a][b] /= 2;
-                                }
+                            for (auto& row : history)
+                                for (auto& col : row)
+                                    for (auto& v : col)
+                                        v /= 2;
                         }
                     }
                     break;
@@ -410,7 +458,7 @@ Move Search::think(int maxDepth, int64_t moveTimeMs, bool infinite) {
     maxMs = infinite ? 999999999LL : (int64_t)(moveTimeMs * 1.5);
     timeManaged = !infinite;
 
-    // Clear killers (keep history across moves for now)
+    // Clear killers (keep history across searches for strength)
     memset(killers, 0, sizeof(killers));
 
     rootBest = MOVE_NONE;
@@ -424,8 +472,9 @@ Move Search::think(int maxDepth, int64_t moveTimeMs, bool infinite) {
 
         // Aspiration window
         if (depth >= 5) {
-            alpha = prevScore - 50;
-            beta  = prevScore + 50;
+            int window = 40;
+            alpha = prevScore - window;
+            beta  = prevScore + window;
         } else {
             alpha = -SCORE_INF;
             beta  =  SCORE_INF;
@@ -433,14 +482,21 @@ Move Search::think(int maxDepth, int64_t moveTimeMs, bool infinite) {
 
         int score = alphaBeta(depth, alpha, beta, 0, true, true);
 
-        // Re-search with wider window if failed
+        // Aspiration window re-search with wider windows
         if (!stopped && (score <= alpha || score >= beta)) {
-            alpha = -SCORE_INF;
-            beta  =  SCORE_INF;
+            // Widen by 3x
+            int window2 = 150;
+            alpha = std::max(-SCORE_INF, prevScore - window2);
+            beta  = std::min( SCORE_INF, prevScore + window2);
             score = alphaBeta(depth, alpha, beta, 0, true, true);
+
+            // If still fails, full window
+            if (!stopped && (score <= alpha || score >= beta)) {
+                score = alphaBeta(depth, -SCORE_INF, SCORE_INF, 0, true, true);
+            }
         }
 
-        if (stopped && depth > 1) break; // use previous result
+        if (stopped && depth > 1) break;
 
         // Update root best
         if (pvLen[0] > 0) {
@@ -470,10 +526,10 @@ Move Search::think(int maxDepth, int64_t moveTimeMs, bool infinite) {
         std::printf("\n");
         fflush(stdout);
 
-        // Time check: if we've used more than half our time, don't start new iteration
-        if (timeManaged && ms >= allocatedMs / 2) break;
+        // Time: don't start new iteration if we've used >40% of time
+        if (timeManaged && ms >= allocatedMs * 2 / 5) break;
 
-        // If we found a forced mate within this depth, stop
+        // Proven mate at this depth - stop
         if (abs(score) >= SCORE_MATE - depth) break;
     }
 
