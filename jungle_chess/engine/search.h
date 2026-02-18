@@ -35,7 +35,7 @@ public:
     }
     
     void add(int ply, const Move& m) {
-        if (ply >= MAX_DEPTH) return;
+        if (ply < 0 || ply >= MAX_DEPTH) return;
         
         if (m != killers[ply * 2]) {
             killers[ply * 2 + 1] = killers[ply * 2];
@@ -44,7 +44,7 @@ public:
     }
     
     bool isKiller(int ply, const Move& m) const {
-        if (ply >= MAX_DEPTH) return false;
+        if (ply < 0 || ply >= MAX_DEPTH) return false;
         return m == killers[ply * 2] || m == killers[ply * 2 + 1];
     }
 };
@@ -63,13 +63,15 @@ public:
     
     void add(Color c, int fromIdx, int toIdx, int bonus) {
         bonus = std::min(bonus, 2000);
-        table[static_cast<int>(c)][fromIdx * 8 + toIdx % 8] += bonus;
-        table[static_cast<int>(c)][fromIdx * 8 + toIdx % 8] -= 
-            table[static_cast<int>(c)][fromIdx * 8 + toIdx % 8] * std::abs(bonus) / 16384;
+        int idx = ((fromIdx ^ toIdx) & 63);
+        table[static_cast<int>(c)][idx] += bonus;
+        table[static_cast<int>(c)][idx] -= 
+            table[static_cast<int>(c)][idx] * std::abs(bonus) / 16384;
     }
     
     int get(Color c, int fromIdx, int toIdx) const {
-        return table[static_cast<int>(c)][fromIdx * 8 + toIdx % 8];
+        int idx = ((fromIdx ^ toIdx) & 63);
+        return table[static_cast<int>(c)][idx];
     }
 };
 

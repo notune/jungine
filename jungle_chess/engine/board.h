@@ -199,16 +199,16 @@ public:
             }
         }
         
+        if (isTrap(to)) {
+            return true;
+        }
+        
         if (defender->type == PieceType::ELEPHANT && attacker->type == PieceType::RAT) {
             return true;
         }
         
         if (attacker->type == PieceType::ELEPHANT && defender->type == PieceType::RAT) {
             return false;
-        }
-        
-        if (isEnemyTrap(to, attacker->color)) {
-            return true;
         }
         
         return pieceRank(attacker->type) >= pieceRank(defender->type);

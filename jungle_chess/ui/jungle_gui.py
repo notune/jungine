@@ -295,6 +295,8 @@ class JungleChessApp:
         self.ai_thinking = False
         self.vs_ai = True
         self.ai_time = 1000
+        self.engine_legal_moves = []
+        self.pending_move = None
 
         self._setup_ui()
         self._new_game()
@@ -477,12 +479,15 @@ class JungleChessApp:
         self.selected_square = None
         self.current_turn = "light"
         self.moves_text.delete(1.0, tk.END)
+        self.engine_legal_moves = []
 
         self.engine.send("ucinewgame")
 
         pieces = self._get_initial_position()
         self.board.set_position(pieces)
         self.board.clear_highlights()
+
+        self._refresh_engine_legal_moves()
 
         self._update_turn_display()
         self.status_label.config(text="Status: Your turn")
@@ -499,6 +504,7 @@ class JungleChessApp:
 
         self.moves.pop()
         self.moves.pop()
+        self.engine_legal_moves = []
 
         self.engine.send("ucinewgame")
 
@@ -516,6 +522,8 @@ class JungleChessApp:
         self.current_turn = "light" if len(self.moves) % 2 == 0 else "dark"
         self._update_turn_display()
         self.status_label.config(text="Status: Your turn")
+
+        self._refresh_engine_legal_moves()
 
         self.moves_text.delete(1.0, tk.END)
         for i, move in enumerate(self.moves):
@@ -575,38 +583,53 @@ class JungleChessApp:
                 self._update_legal_moves(col, row)
 
     def _update_legal_moves(self, col, row):
+        self._refresh_engine_legal_moves()
+
+        from_sq = self._square_to_str(col, row)
         legal = []
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
 
-        for dc, dr in directions:
-            new_col, new_row = col + dc, row + dr
-            if 0 <= new_col < 7 and 0 <= new_row < 9:
-                target = self.board.board.get((new_col, new_row))
-                can_move = False
-
-                if not target:
-                    can_move = True
-                else:
-                    target_is_light = target.islower()
-                    current_is_light = self.current_turn == "light"
-                    if target_is_light != current_is_light:
-                        can_move = True
-
-                if can_move:
-                    legal.append((new_col, new_row))
+        for move in self.engine_legal_moves:
+            if move.startswith(from_sq):
+                to_sq = self._str_to_square(move[2:4])
+                if to_sq:
+                    legal.append(to_sq)
 
         self.board.set_legal_moves(legal)
 
-    def _try_make_move(self, move_str):
-        self.engine.send(f"position startpos moves {' '.join(self.moves + [move_str])}")
+    def _refresh_engine_legal_moves(self):
+        if self.moves:
+            self.engine.send(f"position startpos moves {' '.join(self.moves)}")
+        else:
+            self.engine.send("position startpos")
 
         import time
 
-        time.sleep(0.05)
+        time.sleep(0.01)
 
-        self.engine.send("d")
-        time.sleep(0.05)
-        output = self.engine.get_output()
+        self.engine.get_output()
+
+        self.engine.send("moves")
+
+        for _ in range(50):
+            time.sleep(0.01)
+            output = self.engine.get_output()
+
+            for line in output:
+                if line.startswith("legal moves:"):
+                    moves_str = line[12:].strip()
+                    self.engine_legal_moves = moves_str.split()
+                    return
+
+        self.engine_legal_moves = []
+
+    def _is_legal_move(self, move_str):
+        return move_str in self.engine_legal_moves
+
+    def _try_make_move(self, move_str):
+        if not self._is_legal_move(move_str):
+            return False
+
+        self.engine.send(f"position startpos moves {' '.join(self.moves + [move_str])}")
 
         self.moves.append(move_str)
         self._apply_move_to_board(move_str)
@@ -618,12 +641,14 @@ class JungleChessApp:
             self.moves_text.insert(tk.END, f" {move_str}\n")
         self.moves_text.see(tk.END)
 
-        self.board.set_last_move(
-            self._str_to_square(move_str[:2]) + self._str_to_square(move_str[2:4])
-        )
+        from_sq = self._str_to_square(move_str[:2])
+        to_sq = self._str_to_square(move_str[2:4])
+        if from_sq and to_sq:
+            self.board.set_last_move(from_sq + to_sq)
 
         self.current_turn = "dark" if self.current_turn == "light" else "light"
         self._update_turn_display()
+        self.engine_legal_moves = []
 
         result = self._check_game_result()
         if result:
@@ -724,12 +749,15 @@ class JungleChessApp:
             self.moves_text.insert(tk.END, f" {move}\n")
         self.moves_text.see(tk.END)
 
-        self.board.set_last_move(
-            self._str_to_square(move[:2]) + self._str_to_square(move[2:4])
-        )
+        from_sq = self._str_to_square(move[:2])
+        to_sq = self._str_to_square(move[2:4])
+        if from_sq and to_sq:
+            self.board.set_last_move(from_sq + to_sq)
 
         self.current_turn = "dark" if self.current_turn == "light" else "light"
         self._update_turn_display()
+
+        self._refresh_engine_legal_moves()
 
         result = self._check_game_result()
         if result:
