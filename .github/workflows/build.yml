@@ -42,20 +42,21 @@ jobs:
         shell: msys2 {0}
         run: |
           cd jungle_chess/engine
-          mingw32-make CXX=g++ CXXFLAGS="-std=c++17 -O3 -Wall -Wextra -DNDEBUG" LDFLAGS=""
+          g++ -std=c++17 -O3 -Wall -Wextra -DNDEBUG -o jungle_engine.exe main.cpp
+          ls -la
 
-      - name: Test
+      - name: Test (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           cd jungle_chess/engine
           make test
-        if: matrix.os == 'ubuntu-latest'
 
       - name: Test (Windows)
+        if: matrix.os == 'windows-latest'
         shell: msys2 {0}
         run: |
           cd jungle_chess/engine
-          echo -e "uci\nisready\nquit" | ./jungle_engine.exe
-        if: matrix.os == 'windows-latest'
+          printf 'uci\nisready\nquit\n' | ./jungle_engine.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
