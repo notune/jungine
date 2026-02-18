@@ -1,0 +1,64 @@
+name: Build
+
+on:
+  push:
+    branches: [glm-5]
+  pull_request:
+    branches: [glm-5]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: jungle_engine
+            asset_name: jungle_engine-linux
+          - os: windows-latest
+            artifact_name: jungle_engine.exe
+            asset_name: jungle_engine-windows.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MinGW (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
+
+      - name: Build (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd jungle_chess/engine
+          make
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        run: |
+          cd jungle_chess/engine
+          mingw32-make CXX=g++ CXXFLAGS="-std=c++17 -O3 -Wall -Wextra -DNDEBUG" LDFLAGS=""
+
+      - name: Test
+        run: |
+          cd jungle_chess/engine
+          make test
+        if: matrix.os == 'ubuntu-latest'
+
+      - name: Test (Windows)
+        shell: msys2 {0}
+        run: |
+          cd jungle_chess/engine
+          echo -e "uci\nisready\nquit" | ./jungle_engine.exe
+        if: matrix.os == 'windows-latest'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: jungle_chess/engine/${{ matrix.artifact_name }}
